@@ -7012,6 +7012,29 @@ void PrintConfigDef::init_fff_params()
         "It will not take effect unless the prime tower is enabled.");
     def->set_default_value(new ConfigOptionBool(false));
 
+    // Dynamic infill purge
+    def = this->add("enable_dynamic_infill_purge", coBool);
+    def->category = L("Flush options");
+    def->label = L("Dynamic infill purge");
+    def->tooltip = L("When enabled, the layer's sparse infill density is automatically raised on "
+        "layers where multi-material tool changes will occur, so the purge volume that would "
+        "otherwise go to the wipe tower is absorbed into the object's infill instead. The existing "
+        "sparse infill density acts as the floor; the max-density setting below caps how high DIP "
+        "will push it on heavy purge layers. Leftover purge that exceeds the max-density absorption "
+        "capacity continues to the wipe tower as normal. Requires the prime tower to be enabled.");
+    def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("dynamic_infill_purge_density_max", coPercent);
+    def->category = L("Flush options");
+    def->label = L("Max infill density (dynamic purge)");
+    def->tooltip = L("Maximum sparse infill density that dynamic absorption may raise a layer to. "
+        "If the predicted purge cannot be absorbed at this density, the leftover continues to the "
+        "wipe tower as it would normally.");
+    def->sidetext = "%";
+    def->min = 0;
+    def->max = 100;
+    def->set_default_value(new ConfigOptionPercent(60));
+
     def = this->add("wipe_tower_bridging", coFloat);
     def->label = L("Maximal bridging distance");
     def->tooltip = L("Maximal distance between supports on sparse infill sections.");

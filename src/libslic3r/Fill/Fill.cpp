@@ -864,7 +864,15 @@ std::vector<SurfaceFill> group_fills(const Layer &layer, LockRegionParam &lock_p
 		        bool     is_bridge 	    = layer.id() > 0 && surface.is_bridge();
 		        params.extruder 	 = layerm.region().extruder(extrusion_role);
 		        params.pattern 		 = region_config.sparse_infill_pattern.value;
-		        params.density       = float(region_config.sparse_infill_density);
+		        // per-(layer, region) sparse-infill density override.
+		        // DynamicInfillPurge only emits overrides for eligible regions
+		        // whose sparse_infill_filament matches a layer transition's
+		        // destination, so per-part custom infill and unrelated regions
+		        // naturally fall through to region_config below.
+		        if (auto dip_density = layer.object()->dynamic_purge_density_for_region(layer.id(), region_id))
+		            params.density = *dip_density;
+		        else
+		            params.density = float(region_config.sparse_infill_density);
                 params.lateral_lattice_angle_1 = region_config.lateral_lattice_angle_1;
                 params.lateral_lattice_angle_2 = region_config.lateral_lattice_angle_2;
                 params.infill_overhang_angle = region_config.infill_overhang_angle;

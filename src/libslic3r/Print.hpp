@@ -22,7 +22,9 @@
 #include <Eigen/Geometry>
 
 #include <functional>
+#include <optional>
 #include <set>
+#include <unordered_map>
 
 #include "calib.hpp"
 
@@ -468,6 +470,13 @@ public:
     size_t get_id() const { return m_id; }
     void set_id(size_t id) { m_id = id; }
 
+    // Re-run the per-layer fill loop in place, bypassing
+    // the posInfill step guard, so the closed-loop trim (DynamicInfillPurge) can
+    // regenerate fills at trimmed density after measuring actual router claims.
+    // make_fills() clears each layer's fills.entities first → clean regenerate.
+    // Public so DynamicInfillPurge can drive it (not a friend of PrintObject).
+    void make_fills_redo();
+
   private:
     // to be called from Print only.
     friend class Print;
@@ -495,6 +504,11 @@ private:
     void make_perimeters();
     void prepare_infill();
     void infill();
+    // just the posInfill-guarded fill loop, so Print::process() can
+    // run prepare_infill() across every object, stamp DIP density overrides,
+    // then run make_fills_step() across every object — fills are produced
+    // once, with the DIP density already in effect.
+    void make_fills_step();
     void ironing();
     bool need_z_contouring() const;
     void contour_z();
@@ -577,10 +591,19 @@ private:
 
     
     // SoftFever
-    // 
+    //
     // object id
     size_t               m_id;
     void apply_conical_overhang();
+
+    // per-layer × per-region sparse-infill density override (%).
+    // Outer key: layer.id(). Inner key: index into layer.regions() at slice
+    // time (stable within a single slice). Populated in Print::process()'s
+    // DIP predict phase, consulted in Fill/Fill.cpp::group_fills. Per-region
+    // (rather than per-layer) so flush_into_infill's per-destination-extruder
+    // routing model is honoured: only regions whose sparse_infill_filament
+    // matches a layer's transition destination get bumped.
+    std::unordered_map<size_t, std::unordered_map<size_t, float>> m_dynamic_purge_density_overrides;
 
  public:
     //BBS: When printing multi-material objects, this settings will make slicer to clip the overlapping object parts one by the other.
@@ -588,6 +611,21 @@ private:
     // This was a per-object setting and now we default enable it.
     static bool clip_multipart_objects;
     static bool infill_only_where_needed;
+
+    // accessors for the dynamic-purge density override map.
+    std::optional<float> dynamic_purge_density_for_region(size_t layer_id, size_t region_idx) const {
+        auto it = m_dynamic_purge_density_overrides.find(layer_id);
+        if (it == m_dynamic_purge_density_overrides.end()) return std::nullopt;
+        auto rit = it->second.find(region_idx);
+        if (rit == it->second.end()) return std::nullopt;
+        return rit->second;
+    }
+    void set_dynamic_purge_density_overrides(std::unordered_map<size_t, std::unordered_map<size_t, float>> overrides) {
+        m_dynamic_purge_density_overrides = std::move(overrides);
+    }
+    void clear_dynamic_purge_density_overrides() {
+        m_dynamic_purge_density_overrides.clear();
+    }
 };
 
 struct FakeWipeTower

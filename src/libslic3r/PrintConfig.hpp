@@ -1004,6 +1004,11 @@ PRINT_CONFIG_CLASS_DEFINE(
     // BBS
     ((ConfigOptionBool,                flush_into_infill))
     ((ConfigOptionBool,                flush_into_support))
+    // Dynamic infill purge: opt-in flag + density ceiling.
+    // No separate floor; the existing sparse_infill_density is the implicit
+    // floor (no-purge layers stay at it, purge layers bump up from it).
+    ((ConfigOptionBool,                enable_dynamic_infill_purge))
+    ((ConfigOptionPercent,             dynamic_infill_purge_density_max))
     // BBS
     ((ConfigOptionFloat,              tree_support_branch_distance))
     ((ConfigOptionFloat,              tree_support_tip_diameter))

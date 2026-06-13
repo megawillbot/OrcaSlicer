@@ -37,6 +37,7 @@
 #include "nlohmann/json.hpp"
 
 #include "GCode/ConflictChecker.hpp"
+#include "GCode/DynamicInfillPurge.hpp"
 #include "ParameterUtils.hpp"
 
 #include <codecvt>
@@ -2302,17 +2303,43 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                     obj->set_done(posEstimateCurledExtrusions);
             }
         }
+        // Dynamic infill purge splits the per-object infill phase so density
+        // overrides can be stamped between prepare_infill() (which builds
+        // fill_surfaces) and make_fills_step() (which generates the toolpaths).
+        // Fills are produced once, with the bumped density already in effect.
         for (PrintObject *obj : m_objects) {
             if (need_slicing_objects.count(obj) != 0) {
-                obj->infill();
+                obj->prepare_infill();
             }
             else {
                 if (obj->set_started(posPrepareInfill))
                     obj->set_done(posPrepareInfill);
+            }
+        }
+        {
+            auto plate_overrides = DynamicInfillPurge::compute_plate_overrides(*this);
+            for (PrintObject* obj : m_objects) {
+                auto it = plate_overrides.find(obj);
+                if (it == plate_overrides.end() || it->second.empty())
+                    obj->clear_dynamic_purge_density_overrides();
+                else
+                    obj->set_dynamic_purge_density_overrides(std::move(it->second));
+            }
+        }
+        for (PrintObject *obj : m_objects) {
+            if (need_slicing_objects.count(obj) != 0) {
+                obj->make_fills_step();
+            }
+            else {
                 if (obj->set_started(posInfill))
                     obj->set_done(posInfill);
             }
         }
+        // Subdivide oversized infill islands so the wipe router can distribute
+        // purge across a layer's transitions, then trim bumped infill the router
+        // cannot claim back to baseline (re-fills + re-subdivides). Net-zero.
+        DynamicInfillPurge::apply_island_subdivision(m_objects);
+        DynamicInfillPurge::apply_closed_loop_trim(m_objects, *this);
         for (PrintObject *obj : m_objects) {
             if (need_slicing_objects.count(obj) != 0) {
                 obj->ironing();
@@ -2381,13 +2408,28 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
             }
             else {
                 obj->make_perimeters();
-                obj->infill();
+                // Same prepare / stamp / fill split as the parallel-by-step
+                // branch, so this object's fills pick up the bumped density on
+                // the first pass.
+                obj->prepare_infill();
+                {
+                    auto plate_overrides = DynamicInfillPurge::compute_plate_overrides(*this);
+                    auto it = plate_overrides.find(obj);
+                    if (it == plate_overrides.end() || it->second.empty())
+                        obj->clear_dynamic_purge_density_overrides();
+                    else
+                        obj->set_dynamic_purge_density_overrides(std::move(it->second));
+                }
+                obj->make_fills_step();
                 obj->ironing();
                 obj->generate_support_material();
                 obj->detect_overhangs_for_lift();
                 obj->estimate_curled_extrusions();
             }
         }
+        // Island-split + closed-loop trim on the sequential branch too.
+        DynamicInfillPurge::apply_island_subdivision(m_objects);
+        DynamicInfillPurge::apply_closed_loop_trim(m_objects, *this);
     }
 
     for (PrintObject *obj : m_objects)
@@ -3284,6 +3326,11 @@ void Print::_make_wipe_tower()
         }
     }
     this->throw_if_canceled();
+
+    // DIP density overrides were stamped earlier in Print::process()
+    // (between prepare_infill and make_fills_step), so by the time we reach
+    // psWipeTower the fill toolpaths already reflect the bumped density. No
+    // late-stage re-fill needed; mark_wiping_extrusions sees grown infill.
 
     if (!is_wipe_tower_type2) {
         // in BBL machine, wipe tower is only use to prime extruder. So just use a global wipe volume.

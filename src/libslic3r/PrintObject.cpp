@@ -700,11 +700,19 @@ void PrintObject::infill()
 {
     // prerequisites
     this->prepare_infill();
+    this->make_fills_step();
+}
 
+// split out the posInfill-guarded fill loop so Print::process() can
+// orchestrate it as a separate phase. This lets the DIP prediction pass run
+// between every object's prepare_infill() and any object's make_fills_step(),
+// stamping density overrides that Fill.cpp consumes during this step.
+void PrintObject::make_fills_step()
+{
     if (this->set_started(posInfill)) {
         m_print->set_status(35, L("Generating infill toolpath"));
         const auto& adaptive_fill_octree = this->m_adaptive_fill_octrees.first;
-        const auto& support_fill_octree = this->m_adaptive_fill_octrees.second;
+        const auto& support_fill_octree  = this->m_adaptive_fill_octrees.second;
 
         BOOST_LOG_TRIVIAL(debug) << "Filling layers in parallel - start";
         tbb::parallel_for(
@@ -723,6 +731,26 @@ void PrintObject::infill()
         */
         this->set_done(posInfill);
     }
+}
+
+// Regenerate fills in place for the closed-loop trim.
+// Mirrors make_fills_step's parallel loop but WITHOUT the posInfill guard, so it
+// re-runs after the step is already done. make_fills() clears each layer's
+// fills.entities first → clean regenerate at the current density override.
+void PrintObject::make_fills_redo()
+{
+    const auto& adaptive_fill_octree = this->m_adaptive_fill_octrees.first;
+    const auto& support_fill_octree  = this->m_adaptive_fill_octrees.second;
+    tbb::parallel_for(
+        tbb::blocked_range<size_t>(0, m_layers.size()),
+        [this, &adaptive_fill_octree = adaptive_fill_octree, &support_fill_octree = support_fill_octree](const tbb::blocked_range<size_t>& range) {
+            for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
+                m_print->throw_if_canceled();
+                m_layers[layer_idx]->make_fills(adaptive_fill_octree.get(), support_fill_octree.get(), this->m_lightning_generator.get());
+            }
+        }
+    );
+    m_print->throw_if_canceled();
 }
 
 void PrintObject::ironing()
@@ -1355,6 +1383,17 @@ bool PrintObject::invalidate_state_by_config_options(
         } else if (opt_key == "internal_solid_infill_line_width") {
             // This value is used for calculating perimeter - infill overlap, thus perimeters need to be recalculated.
             steps.emplace_back(posPerimeters);
+            steps.emplace_back(posPrepareInfill);
+        } else if (opt_key == "enable_dynamic_infill_purge"
+                || opt_key == "dynamic_infill_purge_density_max") {
+            // DIP stamps per-layer density overrides between
+            // prepare_infill() and make_fills_step(). A posInfill-only
+            // invalidation re-fills but does NOT force the object back
+            // through the prepare→stamp→fill sub-phase (make_fills_step is
+            // gated on need_slicing_objects in Print::process), so an
+            // incremental toggle would not take effect. Invalidate
+            // posPrepareInfill so the object re-runs the entire DIP
+            // sub-phase — i.e. behaves like a fresh slice.
             steps.emplace_back(posPrepareInfill);
         } else if (
                opt_key == "outer_wall_line_width"

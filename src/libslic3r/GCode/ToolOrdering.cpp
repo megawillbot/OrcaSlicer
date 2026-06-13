@@ -438,8 +438,9 @@ ToolOrdering::ToolOrdering(const PrintObject &object, unsigned int first_extrude
 
 // For the use case when all objects are printed at once.
 // (print->config().print_sequence == PrintSequence::ByObject is false).
-ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool prime_multi_material)
+ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool prime_multi_material, bool predict_no_entities)
 {
+    m_predict_no_entities = predict_no_entities;
     m_print_full_config = &print.full_print_config();
     m_print = const_cast<Print *>(&print);  // for update the context of print
     m_print_config_ptr = &print.config();
@@ -688,11 +689,17 @@ void ToolOrdering::collect_extruders(const PrintObject &object, const std::vecto
             if (! layerm->perimeters.entities.empty()) {
                 bool something_nonoverriddable = true;
 
-                if (m_print_config_ptr) { // in this case print->config().print_sequence != PrintSequence::ByObject (see ToolOrdering constructors)
+                if (m_print_config_ptr && !m_predict_no_entities) { // in this case print->config().print_sequence != PrintSequence::ByObject (see ToolOrdering constructors)
                     something_nonoverriddable = false;
                     for (const auto& eec : layerm->perimeters.entities) // let's check if there are nonoverriddable entities
                         if (!layer_tools.wiping_extrusions().is_overriddable_and_mark(dynamic_cast<const ExtrusionEntityCollection&>(*eec), *m_print_config_ptr, object, region))
                             something_nonoverriddable = true;
+                } else if (m_print_config_ptr && m_predict_no_entities) {
+                    // Predict mode (DynamicInfillPurge): WipingExtrusions::is_overriddable
+                    // returns true for perimeters only when flush_into_objects
+                    // is on (role != erInternalInfill otherwise). Mirror that
+                    // without iterating entities.
+                    something_nonoverriddable = !object.config().flush_into_objects;
                 }
 
                 if (something_nonoverriddable){
@@ -712,21 +719,48 @@ void ToolOrdering::collect_extruders(const PrintObject &object, const std::vecto
             bool has_top_solid_surface  = false;
             bool has_bottom_surface     = false;
             bool something_nonoverriddable = false;
-            for (const ExtrusionEntity *ee : layerm->fills.entities) {
-                // fill represents infill extrusions of a single island.
-                const auto *fill = dynamic_cast<const ExtrusionEntityCollection*>(ee);
-                ExtrusionRole role = fill->entities.empty() ? erNone : fill->entities.front()->role();
-                if (role == erTopSolidInfill || role == erIroning)
-                    has_top_solid_surface = true;
-                else if (role == erBottomSurface)
-                    has_bottom_surface = true;
-                else if (is_solid_infill(role))
-                    has_internal_solid = true;
-                else if (role != erNone)
-                    has_infill = true;
+            if (!m_predict_no_entities) {
+                for (const ExtrusionEntity *ee : layerm->fills.entities) {
+                    // fill represents infill extrusions of a single island.
+                    const auto *fill = dynamic_cast<const ExtrusionEntityCollection*>(ee);
+                    ExtrusionRole role = fill->entities.empty() ? erNone : fill->entities.front()->role();
+                    if (role == erTopSolidInfill || role == erIroning)
+                        has_top_solid_surface = true;
+                    else if (role == erBottomSurface)
+                        has_bottom_surface = true;
+                    else if (is_solid_infill(role))
+                        has_internal_solid = true;
+                    else if (role != erNone)
+                        has_infill = true;
 
+                    if (m_print_config_ptr) {
+                        if (! layer_tools.wiping_extrusions().is_overriddable_and_mark(*fill, *m_print_config_ptr, object, region))
+                            something_nonoverriddable = true;
+                    }
+                }
+            } else {
+                // Predict mode (DynamicInfillPurge): derive the surface-type flags from
+                // fill_surfaces (populated by prepare_infill, available
+                // before make_fills_step). Mirror is_overriddable's role check:
+                // only erInternalInfill (sparse) is overridable, and only when
+                // flush_into_infill is on; solid surfaces (or anything when
+                // flush_into_objects is off) are nonoverriddable.
+                for (const Surface& surf : layerm->fill_surfaces.surfaces) {
+                    if (surf.surface_type == stInternal)
+                        has_infill = true;
+                    else if (surf.is_top())
+                        has_top_solid_surface = true;
+                    else if (surf.is_bottom() || surf.is_bridge())
+                        has_bottom_surface = true;
+                    else if (surf.surface_type == stInternalSolid)
+                        has_internal_solid = true;
+                }
                 if (m_print_config_ptr) {
-                    if (! layer_tools.wiping_extrusions().is_overriddable_and_mark(*fill, *m_print_config_ptr, object, region))
+                    const bool flush_objects = object.config().flush_into_objects;
+                    const bool flush_infill  = object.config().flush_into_infill;
+                    if ((has_internal_solid || has_top_solid_surface || has_bottom_surface) && !flush_objects)
+                        something_nonoverriddable = true;
+                    if (has_infill && !flush_objects && !flush_infill)
                         something_nonoverriddable = true;
                 }
             }

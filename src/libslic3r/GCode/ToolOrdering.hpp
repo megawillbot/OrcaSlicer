@@ -30,6 +30,14 @@ public:
         return something_overridden;
     }
 
+    // Expose per-entity claimed-for-wiping state so the
+    // closed-loop trim can sum, per region, how much infill the router actually
+    // claimed (copy 0). Reads the private entity_map; const, side-effect free.
+    bool dip_entity_claimed(const ExtrusionEntity* entity, const PrintObject* object) const {
+        auto it = entity_map.find(std::make_tuple(entity, object));
+        return it != entity_map.end() && !it->second.empty() && it->second[0] != -1;
+    }
+
     // When allocating extruder overrides of an object's ExtrusionEntity, overrides for maximum 3 copies are allocated in place.
     typedef boost::container::small_vector<int32_t, 3> ExtruderPerCopy;
 
@@ -193,7 +201,15 @@ public:
 
     // For the use case when all objects are printed at once.
     // (print->config().print_sequence == PrintSequence::ByObject is false).
-    ToolOrdering(const Print& print, unsigned int first_extruder, bool prime_multi_material = false);
+    //
+    // predict_no_entities = true lets DynamicInfillPurge construct a
+    // ToolOrdering between prepare_infill() and make_fills_step() (i.e. before
+    // layerm->fills.entities exist). In that mode collect_extruders uses
+    // fill_surfaces instead of fills.entities and skips the side-effect
+    // is_overriddable_and_mark call (the real ToolOrdering built later does
+    // the marking for real). All other ToolOrdering passes (extruder
+    // reordering, has_wipe_tower marking, raft/skirt) work unchanged.
+    ToolOrdering(const Print& print, unsigned int first_extruder, bool prime_multi_material = false, bool predict_no_entities = false);
 
     void handle_dontcare_extruder(const std::vector<unsigned int>& first_layer_tool_order);
     void handle_dontcare_extruder(unsigned int first_extruder);
@@ -279,6 +295,11 @@ private:
     const PrintObject*         m_print_object_ptr = nullptr;
     Print*                     m_print;
     bool                       m_sorted = false;
+    // when set, collect_extruders walks fill_surfaces in place of
+    // fills.entities and treats overridability as if all entities were present
+    // but unmarkable (skips is_overriddable_and_mark side effect). Lets us
+    // build a ToolOrdering before posInfill has produced fill entities.
+    bool                       m_predict_no_entities = false;
 
     FilamentChangeStats        m_stats_by_single_extruder;
     FilamentChangeStats        m_stats_by_multi_extruder_curr;
