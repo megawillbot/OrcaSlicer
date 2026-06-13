@@ -2630,9 +2630,17 @@ bool PartPlate::check_outside(int obj_id, int instance_id, BoundingBoxf3* boundi
 		// Orca: For sinking object, we use a more expensive algorithm so part below build plate won't be considered
 		if (plate_box.intersects(instance_box)) {
 			// TODO: FIXME: this does not take exclusion area into account
-            const BuildVolume build_volume(get_shape(), m_plater->build_volume().printable_height(), m_extruder_areas, m_extruder_heights);
-			const auto state = instance->calc_print_volume_state(build_volume);
-			outside = state == ModelInstancePVS_Partly_Outside;
+			if (m_plater) {
+				const BuildVolume build_volume(get_shape(), m_plater->build_volume().printable_height(), m_extruder_areas, m_extruder_heights);
+				const auto state = instance->calc_print_volume_state(build_volume);
+				outside = state == ModelInstancePVS_Partly_Outside;
+			} else {
+				// Headless/CLI: no Plater for the precise sinking-volume check (m_plater is
+				// null). Dereferencing it segfaulted on plates holding a sinking instance
+				// (e.g. the Deadpool plate). Treat an instance that intersects the plate as
+				// inside — it was placed here to be sliced — so the CLI can proceed.
+				outside = false;
+			}
 		}
 	}
 	else
